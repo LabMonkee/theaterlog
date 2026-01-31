@@ -79,19 +79,78 @@ export function initUI({ rootId = 'app', a11yId = 'a11y-live', data }) {
       el('button', { class: 'btn', title: 'Nieuw', onClick: () => { data.showAddForm(); renderAll(); announce('Nieuw formulier geopend'); } }, el('span', { class: 'icon', style: 'font-size:22px; line-height:1;' }, '＋')),
       el('div', { style: 'position:relative;' },
         el('button', { class: 'btn', title: 'Instellingen', id: 'settings_btn', onClick: (e) => { e.stopPropagation(); toggleSettings(); } }, el('span', { class: 'icon' }, '⚙️')),
-        el('div', { id: 'settings_menu', role: 'menu', 'aria-hidden': 'true', style: 'position:absolute;right:0;top:56px;display:none;min-width:240px;border-radius:10px;padding:8px;z-index:60' },
+        el('div', { id: 'settings_menu', role: 'menu', 'aria-hidden': 'true', style: 'position:absolute;right:0;top:56px;display:none;min-width:320px;border-radius:10px;padding:8px;z-index:60' },
           el('div', { style: 'padding:6px 8px;display:flex;flex-direction:column;gap:8px;' },
             el('button', { class: 'btn ghost', style: 'justify-content:flex-start', onClick: () => {
               closeSettings();
               const input = document.createElement('input');
               input.type = 'file';
-              input.accept = 'application/json';
+              // Accept JSON and common CSV/text formats so CSV files are selectable in file pickers
+              input.accept = 'application/json, text/csv, .csv, text/plain';
               input.onchange = async (e) => {
                 const file = e.target.files && e.target.files[0];
                 if (!file) return;
                 try {
-                  const payload = JSON.parse(await file.text());
-                  const arr = Array.isArray(payload) ? payload : (Array.isArray(payload.reviews) ? payload.reviews : []);
+                  const text = await file.text();
+                  let arr = [];
+                  // Try JSON first
+                  try {
+                    const payload = JSON.parse(text);
+                    arr = Array.isArray(payload) ? payload : (Array.isArray(payload.reviews) ? payload.reviews : []);
+                  } catch (jerr) {
+                    // If not JSON, try simple CSV parser (handles header + quoted fields)
+                    function parseCSV(csvText){
+                      // Normalize line endings and remove BOM if present
+                      csvText = csvText.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim();
+                      if(!csvText) return [];
+                      const lines = csvText.split('\n').map(l => l.trim()).filter(Boolean);
+                      if(lines.length < 1) return [];
+                      // parse header
+                      const headerLine = lines.shift();
+                      // simple CSV split that respects double quotes
+                      const splitLine = (line) => {
+                        const res = [];
+                        let cur = '';
+                        let inQuotes = false;
+                        for (let i = 0; i < line.length; i++) {
+                          const ch = line[i];
+                          if (ch === '"' ) {
+                            if (inQuotes && line[i+1] === '"') { cur += '"'; i++; continue; }
+                            inQuotes = !inQuotes;
+                            continue;
+                          }
+                          if (ch === ',' && !inQuotes) { res.push(cur); cur = ''; continue; }
+                          cur += ch;
+                        }
+                        res.push(cur);
+                        return res.map(s => s.trim());
+                      };
+                      const headers = splitLine(headerLine).map(h => h.replace(/^"|"$/g,'').trim());
+                      return lines.map(l => {
+                        const cols = splitLine(l).map(c => c.replace(/^"|"$/g,''));
+                        const obj = {};
+                        for (let i = 0; i < headers.length; i++) {
+                          obj[headers[i]] = cols[i] || '';
+                        }
+                        return obj;
+                      });
+                    }
+
+                    const csvRows = parseCSV(text);
+                    // Map CSV columns to internal review shape (best-effort)
+                    arr = csvRows.map(row => {
+                      // Accept common Dutch headers used by the exporter: Voorstelling, Artiest, Score, Notitie
+                      const title = row['Voorstelling'] || row['Title'] || row['Naam'] || '';
+                      const director = row['Artiest'] || row['Artist'] || row['Director'] || '';
+                      const ratingRaw = row['Score'] || row['Rating'] || row['Score'] || '';
+                      const rating = Number((ratingRaw || '').replace(/[^0-9\.]/g, '')) || 0;
+                      const body = row['Notitie'] || row['Notitie'] || row['Note'] || row['Notities'] || '';
+                      return { title: title.trim(), director: director.trim(), rating, body: (body || '').trim(), date: null, tags: [] };
+                    });
+                  }
+
+                  if (!Array.isArray(arr)) arr = [];
+
                   // Use data.importArray if available so we merge safely instead of replacing
                   if (typeof data.importArray === 'function') {
                     const res = data.importArray(arr);
@@ -103,7 +162,10 @@ export function initUI({ rootId = 'app', a11yId = 'a11y-live', data }) {
                     renderAll();
                     announce('Items geïmporteerd');
                   }
-                } catch (err) { alert('Fout bij importeren'); }
+                } catch (err) {
+                  console.error('Import error', err);
+                  alert('Fout bij importeren. Bestand kon niet worden gelezen.');
+                }
               };
               input.click();
             } }, 'Importeren'),
@@ -121,6 +183,13 @@ export function initUI({ rootId = 'app', a11yId = 'a11y-live', data }) {
                   closeSettings();
                 }
               } }, 'Deel rapport'),
+            // Help / User guide button
+            el('button', { class: 'btn ghost', style: 'justify-content:flex-start', onClick: (e) => {
+              const help = document.getElementById('settings_help_text');
+              if(!help) return;
+              const isHidden = help.style.display === 'none' || help.style.display === '';
+              help.style.display = isHidden ? 'block' : 'none';
+            } }, 'Gebruikershandleiding'),
             // Dark high-contrast toggle
             el('label', { style: 'display:flex;align-items:center;gap:8px;margin-top:6px;cursor:pointer;padding:6px;border-radius:8px;' },
               (() => {
@@ -134,7 +203,28 @@ export function initUI({ rootId = 'app', a11yId = 'a11y-live', data }) {
                 return chk;
               })(),
               el('span', { class: 'icon', title: 'Donker hoog contrast', 'aria-hidden': 'true', style: 'font-size:20px;line-height:1;' }, '🌓')
-            )
+            ),
+            // Hidden help content (togglable)
+            el('div', { id: 'settings_help_text', style: 'display:none;padding:8px;border-radius:8px;background:rgba(0,0,0,0.03);color:var(--card);font-size:13px;white-space:pre-wrap;overflow:auto;max-height:360px;margin-top:6px;' },
+`Gebruikershandleiding: installeren & overzetten (smartphone)
+
+Je data blijft op je telefoon. Volg deze korte stappen.
+
+iPhone (Safari)
+1. Open Theaterlog in Safari.
+2. Tik op het Deel-icoon onderaan.
+3. Kies 'Zet op beginscherm' → 'Voeg toe'.
+
+Android (Chrome)
+1. Open Theaterlog in Chrome.
+2. Tik op de drie puntjes (menu).
+3. Kies 'Toevoegen aan startscherm' of 'App installeren' → bevestig.
+
+Gegevens overzetten
+Oude telefoon: Instellingen → Exporteren → deel theaterlog.json.
+Nieuwe telefoon: Instellingen → Importeren → selecteer theaterlog.json.
+
+Tip: Maak af en toe een export voor een reservekopie.`)
           )
         )
       )

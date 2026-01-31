@@ -97,8 +97,9 @@ export function generateCSV(reviews) {
 
 export async function performShareReport(csv, mode = 'auto') {
   const filename = 'theaterlog_rapport.csv';
-  
-  if (mode === 'download') {
+
+  // download helper
+  async function doDownload() {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -111,19 +112,29 @@ export async function performShareReport(csv, mode = 'auto') {
     return true;
   }
 
-  if (mode === 'email') {
-    const maxBody = 8000;
-    if (csv.length <= maxBody) {
-      const subject = encodeURIComponent('Theaterlog rapport');
-      const body = encodeURIComponent(csv);
-      window.location.href = `mailto:?subject=${subject}&body=${body}`;
-      return true;
-    }
-    // Fallback to download if too big for mailto
-    return performShareReport(csv, 'download');
+  if (mode === 'download') {
+    return doDownload();
   }
 
-  // Auto/Share
+  // Try to share as a file attachment when explicitly requested for email
+  if (mode === 'email') {
+    try {
+      if (window.navigator?.canShare && typeof window.File === 'function') {
+        const file = new File([csv], filename, { type: 'text/csv' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: 'Theaterlog rapport', text: 'Zie bijgevoegde rapport' });
+          return true;
+        }
+      }
+    } catch (e) {
+      console.warn('Share-as-file failed', e);
+    }
+    // If file attachment via Web Share API isn't available, fall back to downloading the file
+    // (mailto cannot attach files from the browser reliably)
+    return doDownload();
+  }
+
+  // Auto/Share: prefer native share with files, otherwise download
   try {
     if (window.navigator?.canShare && typeof window.File === 'function') {
       const file = new File([csv], filename, { type: 'text/csv' });
@@ -133,6 +144,6 @@ export async function performShareReport(csv, mode = 'auto') {
       }
     }
   } catch (e) { console.warn('Share failed', e); }
-  
-  return performShareReport(csv, 'download');
+
+  return doDownload();
 }
